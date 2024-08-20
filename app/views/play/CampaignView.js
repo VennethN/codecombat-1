@@ -30,6 +30,7 @@ const SubscribeModal = require('views/core/SubscribeModal')
 const LeaderboardModal = require('views/play/modal/LeaderboardModal')
 const Level = require('models/Level')
 const utils = require('core/utils')
+const constants = require('core/constants')
 const ShareProgressModal = require('views/play/modal/ShareProgressModal')
 const UserPollsRecord = require('models/UserPollsRecord')
 const Poll = require('models/Poll')
@@ -176,6 +177,7 @@ module.exports = (CampaignView = (function () {
       this.levelPlayCountMap = {}
       this.levelDifficultyMap = {}
       this.levelScoreMap = {}
+      this.DEEP_API_LIST = constants.DEEP_API_LIST
       this.courseLevelsLoaded = false
 
       if (this.terrain === 'hoc-2018') {
@@ -292,7 +294,7 @@ module.exports = (CampaignView = (function () {
         this.courseLevelsFake = {}
         this.courseInstanceID = utils.getQueryVariable('course-instance')
         this.courseInstance = new CourseInstance({ _id: this.courseInstanceID })
-        const jqxhr = this.courseInstance.fetch()
+        const jqxhr = this.courseInstance.fetch({ data: $.param({ time: +new Date() }) })
         this.supermodel.trackRequest(jqxhr)
         new Promise(jqxhr.then).then(() => {
           const courseID = this.courseInstance.get('courseID')
@@ -982,7 +984,10 @@ module.exports = (CampaignView = (function () {
       storage.save(PROMPTED_FOR_SUBSCRIPTION, true)
       this.openModalView(new SubscribeModal())
       // TODO: Added levelID on 2/9/16. Remove level property and associated AnalyticsLogEvent 'properties.level' index later.
-      window.tracker?.trackEvent('Show subscription modal', trackProperties)
+      if (!me.useChinaResourceInfo()) {
+        window.tracker?.trackEvent('Show subscription modal', trackProperties)
+        this.openModalView(new AILeaguePromotionModal(), true)
+      }
     }
 
     isPremiumCampaign (slug) {
@@ -1438,29 +1443,39 @@ ${problem.category} - ${problem.score} points\
       const levelOriginal = levelElement.data('level-original')
       const level = _.find(_.values(this.getLevels()), { slug: levelSlug })
 
-      let defaultAccess = me.get('hourOfCode') || ((this.campaign != null ? this.campaign.get('type') : undefined) === 'hoc') || ((this.campaign != null ? this.campaign.get('slug') : undefined) === 'intro') ? 'long' : 'short'
-      if (new Date(me.get('dateCreated')) < new Date('2021-09-21')) {
-        defaultAccess = 'all'
-      }
-      let access = me.getExperimentValue('home-content', defaultAccess)
-      if (me.showChinaResourceInfo() || (me.get('country') === 'japan')) {
-        access = 'short'
-      }
-      const freeAccessLevels = ((() => {
-        const result = []
-        for (const fal of Array.from(utils.freeAccessLevels)) {
-          if (_.any([
-            fal.access === 'short',
-            (fal.access === 'medium') && ['medium', 'long', 'extended'].includes(access),
-            (fal.access === 'long') && ['long', 'extended'].includes(access),
-            (fal.access === 'extended') && (access === 'extended')
-          ])) {
-            result.push(fal.slug)
-          }
+      let requiresSubscription
+      if (me.showChinaResourceInfo() && !me.showChinaHomeVersion()) {
+        let defaultAccess = ['short', 'china-classroom']
+        if (me.get('hourOfCode') || this.campaign?.get('type') === 'hoc' || this.campaign?.get('slug') === 'intro') {
+          defaultAccess = defaultAccess.concat(['medium', 'long'])
         }
-        return result
-      })())
-      const requiresSubscription = level.requiresSubscription || ((access !== 'all') && !Array.from(freeAccessLevels).includes(level.slug))
+        const freeAccessLevels = utils.freeAccessLevels.filter((faLevel) => defaultAccess.includes(faLevel.access)).map((faLevel) => faLevel.slug)
+        requiresSubscription = level.requiresSubscription || (!(freeAccessLevels.includes(level.slug)))
+      } else {
+        let defaultAccess = (me.get('hourOfCode') || ((this.campaign != null ? this.campaign.get('type') : undefined) === 'hoc') || ((this.campaign != null ? this.campaign.get('slug') : undefined) === 'intro')) ? 'long' : 'short'
+        if (new Date(me.get('dateCreated')) < new Date('2021-09-21') && (!me.showChinaHomeVersion())) {
+          defaultAccess = 'all'
+        }
+        let access = me.getExperimentValue('home-content', defaultAccess)
+        if (me.showChinaResourceInfo() || (me.get('country') === 'japan')) {
+          access = 'short'
+        }
+        const freeAccessLevels = ((() => {
+          const result = []
+          for (const fal of Array.from(utils.freeAccessLevels)) {
+            if (_.any([
+              fal.access === 'short',
+              (fal.access === 'medium') && ['medium', 'long', 'extended'].includes(access),
+              (fal.access === 'long') && ['long', 'extended'].includes(access),
+              (fal.access === 'extended') && (access === 'extended')
+            ])) {
+              result.push(fal.slug)
+            }
+          }
+          return result
+        })())
+        requiresSubscription = level.requiresSubscription || ((access !== 'all') && !Array.from(freeAccessLevels).includes(level.slug))
+      }
       const canPlayAnyway = _.any([
         !this.requiresSubscription,
         // level.adventurer  # Disable adventurer stuff for now
@@ -2171,15 +2186,18 @@ ${problem.category} - ${problem.score} points\
 
       if (what === 'league-arena') {
         // Note: Currently the tooltips don't work in the campaignView overworld.
+        if (!me.showChinaResourceInfo()) {
+          return false
+        }
         return !me.isAnonymous() && (this.campaign != null ? this.campaign.get('slug') : undefined) && !this.editorMode && !userUtils.isCreatedViaLibrary()
       }
 
       if (what === 'roblox-level') {
-        return this.userQualifiesForRobloxModal()
+        return this.userQualifiesForRobloxModal() && !me.showChinaResourceInfo()
       }
 
       if (what === 'hackstack') {
-        return me.getHackStackExperimentValue() === 'beta' && !userUtils.isCreatedViaLibrary()
+        return !me.showChinaResourceInfo() && me.getHackStackExperimentValue() === 'beta' && !userUtils.isCreatedViaLibrary()
       }
 
       return true
